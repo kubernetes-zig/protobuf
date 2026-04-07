@@ -3,17 +3,18 @@ const builtin = @import("builtin");
 
 pub const PROTOC_VERSION = "32.1";
 
-// File system utilities
+// File system utilities — use C library for build-time checks where std.Io
+// is not available (Zig 0.16+ moved std.fs to std.Io.Dir which requires Io).
 pub fn dirExists(path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-    dir.close();
-    return true;
+    const c_path = std.posix.toPosixPath(path) catch return false;
+    var stat_buf: std.c.Stat = undefined;
+    return std.c.stat(&c_path, &stat_buf) == 0;
 }
 
 pub fn fileExists(path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    file.close();
-    return true;
+    const c_path = std.posix.toPosixPath(path) catch return false;
+    var stat_buf: std.c.Stat = undefined;
+    return std.c.stat(&c_path, &stat_buf) == 0;
 }
 
 // Environment utilities
@@ -184,7 +185,11 @@ pub const RunProtocStep = struct {
                     &.{ "--zig_out=", absolute_dest_dir },
                 ));
                 if (!dirExists(absolute_dest_dir)) {
-                    try std.fs.makeDirAbsolute(absolute_dest_dir);
+                    {
+                        const c_path = try std.posix.toPosixPath(absolute_dest_dir);
+                        const rc = std.c.mkdir(&c_path, 0o755);
+                        if (rc != 0) return error.MakeDirFailed;
+                    }
                 }
 
                 for (self.include_directories) |it| {

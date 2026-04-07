@@ -2,6 +2,16 @@
 const std = @import("std");
 
 const protobuf = @import("protobuf.zig");
+
+/// Safe conversion from integer to enum, returning error on invalid values.
+/// Replaces std.meta.intToEnum which was removed in Zig 0.16.
+fn safeIntToEnum(comptime E: type, value: anytype) error{InvalidEnumTag}!E {
+    const fields = @typeInfo(E).@"enum".fields;
+    inline for (fields) |field| {
+        if (field.value == value) return @enumFromInt(value);
+    }
+    return error.InvalidEnumTag;
+}
 const builtin = @import("builtin");
 const log = if (builtin.os.tag != .freestanding) std.log.scoped(.zig_protobuf) else struct {
     // no-op log implementation for freestanding targets
@@ -428,7 +438,7 @@ pub fn decodeRepeated(
                 var consumed: usize = 0;
                 while (consumed < bytes) {
                     const raw, const c = try decodeScalar(.int32, reader);
-                    const decoded = std.meta.intToEnum(Result, raw) catch {
+                    const decoded = safeIntToEnum(Result, raw) catch {
                         @branchHint(.cold);
                         return error.InvalidInput;
                     };
@@ -444,7 +454,7 @@ pub fn decodeRepeated(
             // Unpacked repeated enum.
             else {
                 const raw, const consumed = try decodeScalar(.int32, reader);
-                const decoded = std.meta.intToEnum(Result, raw) catch {
+                const decoded = safeIntToEnum(Result, raw) catch {
                     @branchHint(.cold);
                     return error.InvalidInput;
                 };
@@ -642,12 +652,12 @@ pub fn decodeMessage(
                     consumed += c;
                     const decoded = b: {
                         if (comptime field_ti == .optional) {
-                            break :b std.meta.intToEnum(
+                            break :b safeIntToEnum(
                                 field_ti.optional.child,
                                 raw,
                             );
                         } else {
-                            break :b std.meta.intToEnum(Field, raw);
+                            break :b safeIntToEnum(Field, raw);
                         }
                     } catch {
                         @branchHint(.cold);
@@ -893,7 +903,7 @@ pub fn decodeMessage(
                                 const raw, const c =
                                     try decodeScalar(.int32, reader);
                                 consumed += c;
-                                const decoded = std.meta.intToEnum(
+                                const decoded = safeIntToEnum(
                                     oo_field.type,
                                     raw,
                                 ) catch {
