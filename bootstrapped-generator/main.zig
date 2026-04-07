@@ -42,6 +42,12 @@ const GenerationContext = struct {
     /// map of message names to their dependencies
     message_deps: std.StringHashMap(std.ArrayList([]const u8)),
 
+    /// When true, enables K8s JSON compatibility mode:
+    /// - map<K,V> fields generate std.json.ObjectMap with JSON object serialization
+    /// - Custom types for Time, Quantity, IntOrString with correct JSON marshaling
+    /// Enable via protoc parameter: --zig_opt=json_compat
+    json_compat: bool = false,
+
     /// Helper struct for working with SourceCodeInfo
     const SourceCodeInfo = struct {
         /// Appends a comment as doc-comment lines (///) to the output
@@ -133,8 +139,7 @@ const GenerationContext = struct {
             \\    }
             \\
             \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Time {
-            \\        _ = options;
-            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, options.max_value_len.?)) {
             \\            .allocated_string => |s| return .{ .timestamp = s },
             \\            .null => return .{ .timestamp = null },
             \\            else => return error.UnexpectedToken,
@@ -177,8 +182,7 @@ const GenerationContext = struct {
             \\    }
             \\
             \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !MicroTime {
-            \\        _ = options;
-            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, options.max_value_len.?)) {
             \\            .allocated_string => |s| return .{ .timestamp = s },
             \\            .null => return .{ .timestamp = null },
             \\            else => return error.UnexpectedToken,
@@ -222,8 +226,7 @@ const GenerationContext = struct {
             \\    }
             \\
             \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Quantity {
-            \\        _ = options;
-            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, options.max_value_len.?)) {
             \\            .allocated_string => |s| return .{ .raw = s },
             \\            .null => return .{ .raw = null },
             \\            else => return error.UnexpectedToken,
@@ -270,14 +273,17 @@ const GenerationContext = struct {
             \\    }
             \\
             \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !IntOrString {
-            \\        _ = options;
-            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, options.max_value_len.?)) {
             \\            .allocated_number => |s| {
             \\                const n = std.fmt.parseInt(i32, s, 10) catch return error.UnexpectedToken;
             \\                return .{ .value = .{ .int = n } };
             \\            },
-            \\            .number => |n| return .{ .value = .{ .int = @intCast(n.value_integer) } },
+            \\            .number => |s| {
+            \\                const n = std.fmt.parseInt(i32, s, 10) catch return error.UnexpectedToken;
+            \\                return .{ .value = .{ .int = n } };
+            \\            },
             \\            .allocated_string => |s| return .{ .value = .{ .string = s } },
+            \\            .string => |s| return .{ .value = .{ .string = s } },
             \\            else => return error.UnexpectedToken,
             \\        }
             \\    }
@@ -303,6 +309,30 @@ const GenerationContext = struct {
         },
     };
 
+    /// Check if a field references a map entry message by looking up the
+    /// nested message type in the parent message's nested_type list.
+    fn isMapField(message: descriptor.DescriptorProto, field: descriptor.FieldDescriptorProto) bool {
+        if (!isRepeated(field)) return false;
+        if (field.type.? != .TYPE_MESSAGE) return false;
+        if (field.type_name == null) return false;
+
+        // The type_name for a map entry is like ".pkg.ParentMessage.LabelsEntry"
+        // We need to find this in the parent message's nested_type list
+        const type_name = field.type_name.?;
+        // Extract the simple name (after the last dot)
+        const last_dot = std.mem.lastIndexOf(u8, type_name, ".");
+        const simple_name = if (last_dot) |idx| type_name[idx + 1 ..] else type_name;
+
+        for (message.nested_type.items) |nested| {
+            if (std.mem.eql(u8, nested.name.?, simple_name)) {
+                if (nested.options) |opts| {
+                    return opts.map_entry orelse false;
+                }
+            }
+        }
+        return false;
+    }
+
     /// Check if a proto FQN is a custom type.
     fn getCustomType(fqn_str: []const u8) ?CustomType {
         for (custom_types) |ct| {
@@ -312,12 +342,23 @@ const GenerationContext = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, request: plugin.CodeGeneratorRequest) !GenerationContext {
+        var json_compat = false;
+        if (request.parameter) |param| {
+            var it = std.mem.splitScalar(u8, param, ',');
+            while (it.next()) |opt| {
+                const trimmed = std.mem.trim(u8, opt, " ");
+                if (std.mem.eql(u8, trimmed, "json_compat")) {
+                    json_compat = true;
+                }
+            }
+        }
         return .{
             .req = request,
             .res = .{},
             .known_packages = .init(allocator),
             .fqn_lines = .init(allocator),
             .message_deps = .init(allocator),
+            .json_compat = json_compat,
         };
     }
 
@@ -583,9 +624,17 @@ const GenerationContext = struct {
         allocator: std.mem.Allocator,
         fqn: FullName,
         file: descriptor.FileDescriptorProto,
+        message: descriptor.DescriptorProto,
         field: descriptor.FieldDescriptorProto,
         is_union: bool,
     ) ![]const u8 {
+        // In json_compat mode, map<string,string> becomes std.json.ObjectMap
+        // In json_compat mode, map<string,V> becomes an optional JSON object.
+        // K8s sends maps as JSON objects {"key": "value"} and they can be absent.
+        if (self.json_compat and isMapField(message, field)) {
+            return "?std.json.Value";
+        }
+
         var prefix: []const u8 = "";
         var postfix: []const u8 = "";
         const repeated = isRepeated(field);
@@ -733,13 +782,20 @@ const GenerationContext = struct {
     }
 
     fn getFieldTypeDescriptor(
-        _: *GenerationContext,
+        self: *GenerationContext,
         allocator: std.mem.Allocator,
         _: FullName,
         file: descriptor.FileDescriptorProto,
+        message: descriptor.DescriptorProto,
         field: descriptor.FieldDescriptorProto,
         is_union: bool,
     ) ![]const u8 {
+        // In json_compat mode, map fields are handled by std.json directly
+        // via ObjectMap's built-in jsonParse, so we emit .submessage descriptor
+        // which delegates to the type's own jsonParse.
+        if (self.json_compat and isMapField(message, field)) {
+            return ".submessage";
+        }
         _ = is_union;
         var prefix: []const u8 = "";
 
@@ -791,9 +847,8 @@ const GenerationContext = struct {
         field: descriptor.FieldDescriptorProto,
         is_union: bool,
     ) !void {
-        _ = message;
         const name = try escapeName(allocator, field.name.?);
-        const descStr = try self.getFieldTypeDescriptor(allocator, fqn, file, field, is_union);
+        const descStr = try self.getFieldTypeDescriptor(allocator, fqn, file, message, field, is_union);
         const format = "        .{s} = fd({?d}, {s}),\n";
         try lines.append(
             allocator,
@@ -811,10 +866,18 @@ const GenerationContext = struct {
         field: descriptor.FieldDescriptorProto,
         is_union: bool,
     ) !void {
-        _ = message;
-
-        const type_str = try self.getFieldType(allocator, fqn, file, field, is_union);
+        const type_str = try self.getFieldType(allocator, fqn, file, message, field, is_union);
         const field_name = try escapeName(allocator, field.name.?);
+
+        // In json_compat mode, map fields are optional json values
+        if (self.json_compat and isMapField(message, field)) {
+            try lines.append(
+                allocator,
+                try std.fmt.allocPrint(allocator, "    {s}: {s} = null,\n", .{ field_name, type_str }),
+            );
+            return;
+        }
+
         const nullable = type_str[0] == '?';
 
         if (try self.getFieldDefault(allocator, field, file, nullable)) |default_value| {
@@ -861,16 +924,25 @@ const GenerationContext = struct {
             const m: descriptor.DescriptorProto = message;
             const messageFqn = try fqn.append(allocator, m.name.?);
 
-            // Check if this is a custom type override
-            if (getCustomType(messageFqn.buf)) |ct| {
-                try lines.append(allocator, "\n");
-                try lines.append(
-                    allocator,
-                    try std.fmt.allocPrint(allocator, "pub const {s} = struct {{\n", .{ct.name}),
-                );
-                try lines.append(allocator, ct.source);
-                try lines.append(allocator, "};\n");
-                continue;
+            // In json_compat mode, skip map entry messages (they become ObjectMap)
+            if (self.json_compat) {
+                if (m.options) |opts| {
+                    if (opts.map_entry orelse false) continue;
+                }
+            }
+
+            // In json_compat mode, emit custom types for K8s JSON compatibility
+            if (self.json_compat) {
+                if (getCustomType(messageFqn.buf)) |ct| {
+                    try lines.append(allocator, "\n");
+                    try lines.append(
+                        allocator,
+                        try std.fmt.allocPrint(allocator, "pub const {s} = struct {{\n", .{ct.name}),
+                    );
+                    try lines.append(allocator, ct.source);
+                    try lines.append(allocator, "};\n");
+                    continue;
+                }
             }
 
             // Build the path for this message: root_path + [message_field_number, message_i]
@@ -953,7 +1025,7 @@ const GenerationContext = struct {
                         const f: descriptor.FieldDescriptorProto = field;
                         if (f.oneof_index orelse -1 == @as(i32, @intCast(i))) {
                             const name = try escapeName(allocator, f.name.?);
-                            const typeStr = try self.getFieldType(allocator, messageFqn, file, f, true);
+                            const typeStr = try self.getFieldType(allocator, messageFqn, file, m, f, true);
                             try lines.append(allocator, try std.fmt.allocPrint(
                                 allocator,
                                 "      {s}: {s},\n",
