@@ -98,6 +98,219 @@ const GenerationContext = struct {
         }
     };
 
+    /// Custom K8s type overrides. When a proto message matches one of these
+    /// fully-qualified names, the generator emits custom Zig code instead of
+    /// generating from proto field definitions. This enables correct JSON
+    /// serialization for types where K8s uses custom marshaling that differs
+    /// from the proto wire format.
+    const CustomType = struct {
+        /// Proto fully-qualified name (without leading dot)
+        fqn: []const u8,
+        /// The Zig struct name to emit
+        name: []const u8,
+        /// Complete Zig source for the custom type body (fields + methods)
+        source: []const u8,
+    };
+
+    const custom_types = [_]CustomType{
+        .{
+            .fqn = "k8s.io.apimachinery.pkg.apis.meta.v1.Time",
+            .name = "Time",
+            .source =
+            \\    /// RFC3339 timestamp string, e.g. "2024-01-01T00:00:00Z".
+            \\    /// K8s serializes Time as a plain string in JSON, not as the proto
+            \\    /// {seconds, nanos} message.
+            \\    timestamp: ?[]const u8 = null,
+            \\
+            \\    /// Parse from RFC3339 string.
+            \\    pub fn fromString(s: []const u8) Time {
+            \\        return .{ .timestamp = s };
+            \\    }
+            \\
+            \\    /// Return the RFC3339 string or null.
+            \\    pub fn string(self: Time) ?[]const u8 {
+            \\        return self.timestamp;
+            \\    }
+            \\
+            \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Time {
+            \\        _ = options;
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\            .allocated_string => |s| return .{ .timestamp = s },
+            \\            .null => return .{ .timestamp = null },
+            \\            else => return error.UnexpectedToken,
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonStringify(self: *const Time, jws: anytype) !void {
+            \\        if (self.timestamp) |ts| {
+            \\            try jws.write(ts);
+            \\        } else {
+            \\            try jws.write(null);
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Time {
+            \\        _ = allocator;
+            \\        _ = options;
+            \\        return switch (source) {
+            \\            .string => |s| .{ .timestamp = s },
+            \\            .null => .{ .timestamp = null },
+            \\            else => error.UnexpectedToken,
+            \\        };
+            \\    }
+            \\
+            ,
+        },
+        .{
+            .fqn = "k8s.io.apimachinery.pkg.apis.meta.v1.MicroTime",
+            .name = "MicroTime",
+            .source =
+            \\    /// RFC3339 timestamp with microsecond precision.
+            \\    timestamp: ?[]const u8 = null,
+            \\
+            \\    pub fn fromString(s: []const u8) MicroTime {
+            \\        return .{ .timestamp = s };
+            \\    }
+            \\
+            \\    pub fn string(self: MicroTime) ?[]const u8 {
+            \\        return self.timestamp;
+            \\    }
+            \\
+            \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !MicroTime {
+            \\        _ = options;
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\            .allocated_string => |s| return .{ .timestamp = s },
+            \\            .null => return .{ .timestamp = null },
+            \\            else => return error.UnexpectedToken,
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonStringify(self: *const MicroTime, jws: anytype) !void {
+            \\        if (self.timestamp) |ts| {
+            \\            try jws.write(ts);
+            \\        } else {
+            \\            try jws.write(null);
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !MicroTime {
+            \\        _ = allocator;
+            \\        _ = options;
+            \\        return switch (source) {
+            \\            .string => |s| .{ .timestamp = s },
+            \\            .null => .{ .timestamp = null },
+            \\            else => error.UnexpectedToken,
+            \\        };
+            \\    }
+            \\
+            ,
+        },
+        .{
+            .fqn = "k8s.io.apimachinery.pkg.api.resource.Quantity",
+            .name = "Quantity",
+            .source =
+            \\    /// Quantity string, e.g. "100m", "1Gi", "500".
+            \\    /// K8s serializes Quantity as a plain string in JSON.
+            \\    raw: ?[]const u8 = null,
+            \\
+            \\    pub fn fromString(s: []const u8) Quantity {
+            \\        return .{ .raw = s };
+            \\    }
+            \\
+            \\    pub fn string(self: Quantity) ?[]const u8 {
+            \\        return self.raw;
+            \\    }
+            \\
+            \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Quantity {
+            \\        _ = options;
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\            .allocated_string => |s| return .{ .raw = s },
+            \\            .null => return .{ .raw = null },
+            \\            else => return error.UnexpectedToken,
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonStringify(self: *const Quantity, jws: anytype) !void {
+            \\        if (self.raw) |r| {
+            \\            try jws.write(r);
+            \\        } else {
+            \\            try jws.write(null);
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Quantity {
+            \\        _ = allocator;
+            \\        _ = options;
+            \\        return switch (source) {
+            \\            .string => |s| .{ .raw = s },
+            \\            .null => .{ .raw = null },
+            \\            else => error.UnexpectedToken,
+            \\        };
+            \\    }
+            \\
+            ,
+        },
+        .{
+            .fqn = "k8s.io.apimachinery.pkg.util.intstr.IntOrString",
+            .name = "IntOrString",
+            .source =
+            \\    /// IntOrString can hold either an integer or a string value.
+            \\    /// K8s serializes this as either a bare integer or a bare string in JSON.
+            \\    value: union(enum) {
+            \\        int: i32,
+            \\        string: []const u8,
+            \\    } = .{ .int = 0 },
+            \\
+            \\    pub fn fromInt(v: i32) IntOrString {
+            \\        return .{ .value = .{ .int = v } };
+            \\    }
+            \\
+            \\    pub fn fromString(s: []const u8) IntOrString {
+            \\        return .{ .value = .{ .string = s } };
+            \\    }
+            \\
+            \\    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !IntOrString {
+            \\        _ = options;
+            \\        switch (try source.nextAllocMax(allocator, .alloc_always, source.max_value_len)) {
+            \\            .allocated_number => |s| {
+            \\                const n = std.fmt.parseInt(i32, s, 10) catch return error.UnexpectedToken;
+            \\                return .{ .value = .{ .int = n } };
+            \\            },
+            \\            .number => |n| return .{ .value = .{ .int = @intCast(n.value_integer) } },
+            \\            .allocated_string => |s| return .{ .value = .{ .string = s } },
+            \\            else => return error.UnexpectedToken,
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonStringify(self: *const IntOrString, jws: anytype) !void {
+            \\        switch (self.value) {
+            \\            .int => |v| try jws.write(v),
+            \\            .string => |s| try jws.write(s),
+            \\        }
+            \\    }
+            \\
+            \\    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !IntOrString {
+            \\        _ = allocator;
+            \\        _ = options;
+            \\        return switch (source) {
+            \\            .integer => |n| .{ .value = .{ .int = @intCast(n) } },
+            \\            .string => |s| .{ .value = .{ .string = s } },
+            \\            else => error.UnexpectedToken,
+            \\        };
+            \\    }
+            \\
+            ,
+        },
+    };
+
+    /// Check if a proto FQN is a custom type.
+    fn getCustomType(fqn_str: []const u8) ?CustomType {
+        for (custom_types) |ct| {
+            if (std.mem.eql(u8, ct.fqn, fqn_str)) return ct;
+        }
+        return null;
+    }
+
     pub fn init(allocator: std.mem.Allocator, request: plugin.CodeGeneratorRequest) !GenerationContext {
         return .{
             .req = request,
@@ -647,6 +860,18 @@ const GenerationContext = struct {
         for (messages.items, 0..) |message, message_i| {
             const m: descriptor.DescriptorProto = message;
             const messageFqn = try fqn.append(allocator, m.name.?);
+
+            // Check if this is a custom type override
+            if (getCustomType(messageFqn.buf)) |ct| {
+                try lines.append(allocator, "\n");
+                try lines.append(
+                    allocator,
+                    try std.fmt.allocPrint(allocator, "pub const {s} = struct {{\n", .{ct.name}),
+                );
+                try lines.append(allocator, ct.source);
+                try lines.append(allocator, "};\n");
+                continue;
+            }
 
             // Build the path for this message: root_path + [message_field_number, message_i]
             var message_path: std.ArrayList(i32) = .empty;
